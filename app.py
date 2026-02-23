@@ -1,8 +1,9 @@
 # ==============================================================================
 # BIPV 통합 관제 시스템 (Streamlit Cloud / 로컬 실행용)
 # streamlit run 260212_a.py → 링크만 열면 대시보드 표시
+# bipv_xgboost_model.pkl 있으면 XGBoost 각도 사용, 없으면 규칙 기반
 # ==============================================================================
-__version__ = "5.28"
+__version__ = "5.29"
 
 import os
 import sys
@@ -53,10 +54,16 @@ XGB_FEATURE_NAMES = ["hour", "month", "zenith", "azimuth", "ghi", "dni", "dhi", 
 
 @st.cache_resource
 def load_xgb_model():
-    """XGBoost 모델 로드. 실패 시 None 반환."""
+    """XGBoost 모델 로드(bipv_xgboost_model.pkl). 실패 시 None 반환."""
     if not _XGB_AVAILABLE:
         return None
-    for base in [os.path.dirname(os.path.abspath(__file__)), os.getcwd()]:
+    bases = []
+    try:
+        bases.append(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    bases.extend([os.getcwd(), "."])
+    for base in bases:
         path = os.path.join(base, XGB_MODEL_FILENAME)
         if os.path.isfile(path):
             try:
@@ -67,32 +74,35 @@ def load_xgb_model():
 
 
 def predict_angles_xgb(model, times, zenith_arr, azimuth_arr, ghi_real, dni_arr, dhi_arr, cloud_series, angle_cap_deg):
-    """XGBoost로 시간별 각도 예측. 반환: (angles,) 길이 24, ghi<10 구간은 0°."""
+    """XGBoost로 시간별 각도 예측. 학습 스크립트와 동일 feature 순서로 numpy 전달."""
     n = len(times)
-    month = times.month.values
-    hour = times.hour.values
-    X = pd.DataFrame({
-        "hour": hour,
-        "month": month,
-        "zenith": zenith_arr,
-        "azimuth": azimuth_arr,
-        "ghi": ghi_real,
-        "dni": dni_arr,
-        "dhi": dhi_arr,
-        "cloud_cover": cloud_series,
-    }, columns=XGB_FEATURE_NAMES)
-    # 학습 시 사용한 컬럼 순서 맞추기
+    # 학습 시 사용한 feature 순서: hour, month, zenith, azimuth, ghi, dni, dhi, cloud_cover
+    X = np.column_stack([
+        np.asarray(times.hour, dtype=float).ravel()[:n],
+        np.asarray(times.month, dtype=float).ravel()[:n],
+        np.asarray(zenith_arr, dtype=float).ravel()[:n],
+        np.asarray(azimuth_arr, dtype=float).ravel()[:n],
+        np.asarray(ghi_real, dtype=float).ravel()[:n],
+        np.asarray(dni_arr, dtype=float).ravel()[:n],
+        np.asarray(dhi_arr, dtype=float).ravel()[:n],
+        np.asarray(cloud_series, dtype=float).ravel()[:n],
+    ])
     if hasattr(model, "feature_names_in_"):
-        cols = [c for c in model.feature_names_in_ if c in X.columns]
-        if cols:
-            X = X[cols]
+        # sklearn 스타일: 모델 학습 시 컬럼 순서에 맞춤
+        try:
+            order = [XGB_FEATURE_NAMES.index(c) for c in model.feature_names_in_ if c in XGB_FEATURE_NAMES]
+            if len(order) == len(model.feature_names_in_) == X.shape[1]:
+                X = X[:, order]
+        except (ValueError, IndexError):
+            pass
     try:
         pred = model.predict(X)
     except Exception:
         return None
-    pred = np.asarray(pred).ravel()
+    pred = np.asarray(pred).ravel()[:n]
     pred = np.clip(pred, 0, min(90, angle_cap_deg))
-    pred[ghi_real < 10] = 0
+    ghi_flat = np.asarray(ghi_real).ravel()[:n]
+    pred[ghi_flat < 10] = 0
     return pred.astype(float)
 
 
@@ -229,6 +239,9 @@ def _poa_with_iam_app(surface_tilt, surface_azimuth, solar_zenith, solar_azimuth
 def run_app():
     st.set_page_config(page_title="BIPV Dashboard", layout="wide")
 
+    # XGBoost 모델 미리 로드 (사이드바 표시용)
+    xgb_model = load_xgb_model() if _XGB_AVAILABLE else None
+
     # 기상청 예보 (기본: 내일)
     kma, tomorrow = get_kma_forecast()
     if kma is None:
@@ -240,6 +253,8 @@ def run_app():
 
     # 사이드바
     st.sidebar.title("■ 통합 환경 설정")
+    if xgb_model is not None:
+        st.sidebar.caption("✅ XGBoost 모델 적용 중 (bipv_xgboost_model.pkl)")
     st.sidebar.subheader("1. 시간 및 날짜")
     sim_date = st.sidebar.date_input("시뮬레이션 날짜", tomorrow_dt)
     sunshine_hours = default_sunshine_hours
@@ -289,7 +304,6 @@ def run_app():
     _angle_cap = min(90, angle_cap_deg)
 
     # 각도: XGBoost 모델 있으면 사용, 없거나 실패 시 규칙 기반(90°−천정각)
-    xgb_model = load_xgb_model() if _XGB_AVAILABLE else None
     xgb_angles = None
     if xgb_model is not None:
         xgb_angles = predict_angles_xgb(
@@ -316,7 +330,7 @@ def run_app():
     weather_status = "맑음" if np.mean(cloud_series) < 0.3 else ("구름많음" if np.mean(cloud_series) < 0.8 else "흐림")
 
     # 메인 영역
-    st.title("■ BIPV 통합 관제 대시보드 v5.28")
+    st.title("■ BIPV 통합 관제 대시보드 v5.29")
     st.markdown(f"**날짜:** {_sim_d} | **날씨:** {weather_status} | **각도:** {angle_mode}")
 
     c1, c2 = st.columns(2)
