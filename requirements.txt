@@ -6,3 +6,5 @@ plotly
 requests
 pytz
 gdown
+xgboost
+joblib
