@@ -5,3 +5,4 @@ pvlib
 plotly
 requests
 pytz
+gdown
