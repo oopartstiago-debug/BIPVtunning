@@ -5,6 +5,7 @@
 # ==============================================================================
 __version__ = "5.29"
 
+
 import os
 import sys
 
@@ -17,6 +18,36 @@ import plotly.graph_objects as go
 import pvlib
 from pvlib.location import Location
 from datetime import datetime, timedelta
+
+import gdown  # 파일 상단에 추가
+
+@st.cache_resource
+def load_xgb_model():
+    """XGBoost 모델 로드. 파일이 없으면 구글 드라이브에서 자동 다운로드."""
+    if not _XGB_AVAILABLE:
+        return None
+    
+    # 1. 구글 드라이브 파일 ID (자신의 파일 ID로 교체하세요)
+    FILE_ID = '15FjuoXHiGtFHr3P2Eqvvn2KIu4rtwzS' 
+    url = f'https://drive.google.com/uc?id={FILE_ID}'
+    output = XGB_MODEL_FILENAME  # "bipv_xgboost_model.pkl"
+
+    # 2. 파일이 없으면 다운로드 실행
+    if not os.path.exists(output):
+        with st.spinner("구글 드라이브에서 AI 모델을 불러오는 중..."):
+            try:
+                gdown.download(url, output, quiet=False)
+            except Exception as e:
+                st.error(f"모델 다운로드 실패: {e}")
+                return None
+
+    # 3. 로드
+    try:
+        return joblib.load(output)
+    except Exception as e:
+        st.error(f"모델 로드 에러: {e}")
+        return None
+
 
 # XGBoost: 모델 파일 있으면 사용, 없으면 규칙 기반
 try:
